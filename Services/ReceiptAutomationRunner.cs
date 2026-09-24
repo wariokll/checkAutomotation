@@ -6,7 +6,7 @@ namespace UIAutomationInspectorWpf.Services;
 
 public sealed class ReceiptAutomationRunner
 {
-    private static readonly TimeSpan UiActionDelay = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan UiActionDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan LogRetryDelay = TimeSpan.FromSeconds(1);
     private const string NoErrorsLog = "(0) Ошибок нет";
 
