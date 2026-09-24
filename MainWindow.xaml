@@ -27,7 +27,9 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="180" />
                     </Grid.RowDefinitions>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                         <TextBlock Text="Окно назначения:" VerticalAlignment="Center" Margin="0,0,8,0" />
@@ -40,7 +42,18 @@
                         <Button x:Name="RunButton" Content="Запустить обработку" Click="RunButton_Click" Padding="14,5" Margin="24,0,0,0" IsEnabled="False" />
                         <Button x:Name="CancelButton" Content="Остановить" Click="CancelButton_Click" Padding="14,5" Margin="8,0,0,0" IsEnabled="False" />
                     </StackPanel>
-                    <TextBox x:Name="PreviewTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="После выбора Excel здесь появится количество строк и групп ФД." />
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="Обработать чеки:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="StartReceiptTextBox" Width="70" Text="1" Padding="6,3" />
+                        <TextBlock Text="по" VerticalAlignment="Center" Margin="8,0" />
+                        <TextBox x:Name="EndReceiptTextBox" Width="70" Text="" Padding="6,3" />
+                        <TextBlock Text="(пусто = последний чек)" Foreground="#64748B" VerticalAlignment="Center" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <TextBox x:Name="PreviewTextBox" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="После выбора Excel здесь появится количество строк и групп ФД." />
+                    <DockPanel Grid.Row="4" Margin="0,12,0,0">
+                        <Button DockPanel.Dock="Top" Content="Очистить лог" Click="ClearLog_Click" HorizontalAlignment="Left" Padding="12,4" />
+                        <TextBox x:Name="LogTextBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="11" />
+                    </DockPanel>
                 </Grid>
             </TabItem>
             <TabItem Header="Настройки">

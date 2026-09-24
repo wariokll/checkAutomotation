@@ -22,55 +22,59 @@ public sealed class ReceiptAutomationRunner
         IntPtr windowHandle,
         IReadOnlyList<ReceiptGroup> groups,
         IProgress<string>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int receiptStartIndex = 0)
     {
         _uiAutomation.ActivateWindow(windowHandle);
         await Task.Delay(200, cancellationToken);
         var root = _uiAutomation.FindRoot(windowHandle)
             ?? throw new InvalidOperationException("Не удалось получить окно назначения.");
 
-        foreach (var group in groups)
+        for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
         {
+            var group = groups[groupIndex];
             cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report($"Чек ФД {group.FiscalDocumentNumber}: открытие");
+            var receiptNumber = receiptStartIndex + groupIndex + 1;
+            var receiptRange = $"Чек {receiptNumber}/{receiptStartIndex + groups.Count}";
+            progress?.Report($"{receiptRange}, ФД {group.FiscalDocumentNumber}: открытие");
             await OpenReceiptUntilLogIsClearAsync(root, profile, progress, cancellationToken);
 
             foreach (var row in group.Rows)
             {
-                SetValue(root, profile, "ProductName", row.ProductName);
-                SetValue(root, profile, "Price", row.ItemPrice.ToString("0.##", CultureInfo.InvariantCulture));
-                SetValue(root, profile, "Quantity", row.Quantity.ToString("0.##", CultureInfo.InvariantCulture));
-                Invoke(root, profile, "AddPosition");
+                SetValue(root, profile, "ProductName", row.ProductName, progress, "Ввод наименования товара");
+                SetValue(root, profile, "Price", row.ItemPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод цены");
+                SetValue(root, profile, "Quantity", row.Quantity.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод количества");
+                Invoke(root, profile, "AddPosition", progress, "Нажатие: добавить позицию");
                 await DelayAfterUiActionAsync(cancellationToken);
             }
 
-            Invoke(root, profile, "ReceiptAttributes");
-            SetDateValue(root, profile, "CorrectionDate", group.FormationTime.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture));
-            Invoke(root, profile, "TransferCorrection");
+            Invoke(root, profile, "ReceiptAttributes", progress, "Нажатие: атрибуты чека");
+            SetDateValue(root, profile, "CorrectionDate", group.FormationTime.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture), progress, "Ввод даты коррекции");
+            Invoke(root, profile, "TransferCorrection", progress, "Нажатие: передать данные коррекции");
             await DelayAfterUiActionAsync(cancellationToken);
-            Invoke(root, profile, "OfdTags");
-            SetValue(root, profile, "TagNumber", "1192");
-            Invoke(root, profile, "TagDescription");
-            SetValue(root, profile, "TagValue", group.FiscalSign);
-            Invoke(root, profile, "SendTag");
+            Invoke(root, profile, "OfdTags", progress, "Нажатие: теги ОФД");
+            SetValue(root, profile, "TagNumber", "1192", progress, "Ввод номера тега 1192");
+            Invoke(root, profile, "TagDescription", progress, "Нажатие: описание тега");
+            SetValue(root, profile, "TagValue", group.FiscalSign, progress, "Ввод значения ФПД");
+            Invoke(root, profile, "SendTag", progress, "Нажатие: отправить тег");
             await DelayAfterUiActionAsync(cancellationToken);
-            Invoke(root, profile, "FiscalOperations");
+            Invoke(root, profile, "FiscalOperations", progress, "Нажатие: операции ФН");
 
             if (group.PaymentMethod.Contains("налич", StringComparison.OrdinalIgnoreCase))
             {
-                SetValue(root, profile, "Cash", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture));
+                SetValue(root, profile, "Cash", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод суммы наличных");
             }
             else
             {
-                SetValue(root, profile, "Cashless", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture));
+                SetValue(root, profile, "Cashless", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод суммы безналичных");
             }
 
-            SetValue(root, profile, "Vat22", group.TotalVat.ToString("0.##", CultureInfo.InvariantCulture));
-            Invoke(root, profile, "CloseReceipt");
+            SetValue(root, profile, "Vat22", group.TotalVat.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод НДС 22%");
+            Invoke(root, profile, "CloseReceipt", progress, "Нажатие: закрыть чек");
             await DelayAfterUiActionAsync(cancellationToken);
-            var closeLog = ReadText(root, profile, "Logs");
-            progress?.Report($"Чек ФД {group.FiscalDocumentNumber}: лог после закрытия: {closeLog}");
-            progress?.Report($"Чек ФД {group.FiscalDocumentNumber}: завершен");
+            var closeLog = ReadText(root, profile, "Logs", progress, "Чтение внешнего лога после закрытия");
+            progress?.Report($"{receiptRange}, ФД {group.FiscalDocumentNumber}: лог после закрытия: {closeLog}");
+            progress?.Report($"{receiptRange}, ФД {group.FiscalDocumentNumber}: завершен");
         }
     }
 
@@ -83,9 +87,9 @@ public sealed class ReceiptAutomationRunner
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Invoke(root, profile, "OpenReceipt");
+            Invoke(root, profile, "OpenReceipt", progress, "Нажатие: открыть чек");
             await DelayAfterUiActionAsync(cancellationToken);
-            var log = ReadText(root, profile, "Logs").Trim();
+            var log = ReadText(root, profile, "Logs", progress, "Чтение внешнего лога после открытия").Trim();
             if (string.Equals(log, NoErrorsLog, StringComparison.OrdinalIgnoreCase))
             {
                 return;
@@ -101,23 +105,27 @@ public sealed class ReceiptAutomationRunner
         await Task.Delay(UiActionDelay, cancellationToken);
     }
 
-    private void Invoke(AutomationElement root, AutomationProfile profile, string key)
+    private void Invoke(AutomationElement root, AutomationProfile profile, string key, IProgress<string>? progress, string operation)
     {
+        progress?.Report(operation);
         _uiAutomation.Invoke(ResolveRequired(root, profile, key));
     }
 
-    private void SetValue(AutomationElement root, AutomationProfile profile, string key, string value)
+    private void SetValue(AutomationElement root, AutomationProfile profile, string key, string value, IProgress<string>? progress, string operation)
     {
+        progress?.Report($"{operation}: {value}");
         _uiAutomation.SetValue(ResolveRequired(root, profile, key), value);
     }
 
-    private void SetDateValue(AutomationElement root, AutomationProfile profile, string key, string value)
+    private void SetDateValue(AutomationElement root, AutomationProfile profile, string key, string value, IProgress<string>? progress, string operation)
     {
+        progress?.Report($"{operation}: {value}");
         _uiAutomation.SetDateValue(ResolveRequired(root, profile, key), value);
     }
 
-    private string ReadText(AutomationElement root, AutomationProfile profile, string key)
+    private string ReadText(AutomationElement root, AutomationProfile profile, string key, IProgress<string>? progress, string operation)
     {
+        progress?.Report(operation);
         return _uiAutomation.ReadText(ResolveRequired(root, profile, key));
     }
 

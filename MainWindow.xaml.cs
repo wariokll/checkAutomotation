@@ -17,8 +17,10 @@ public partial class MainWindow : Window
     private readonly UiAutomationService _uiAutomation = new();
     private readonly ElementPickerService _picker;
     private readonly ReceiptAutomationRunner _runner;
+    private readonly AutomationLogService _logService = new();
     private readonly ObservableCollection<WindowInfo> _windows = [];
     private AutomationProfile _profile;
+    private AutomationRunLog? _currentRunLog;
     private string? _excelPath;
     private string? _pickingKey;
     private CancellationTokenSource? _runCancellation;
@@ -144,16 +146,18 @@ public partial class MainWindow : Window
 
         try
         {
-            var rows = _excelReader.Read(dialog.FileName);
+            var rows = _excelReader.Read(dialog.FileName, AddLog);
             var groups = ExcelReceiptReader.GroupByFiscalDocument(rows);
             _excelPath = dialog.FileName;
             ExcelPathText.Text = dialog.FileName;
             PreviewTextBox.Text = BuildPreview(rows, groups);
             RunButton.IsEnabled = rows.Count > 0;
             StatusText.Text = $"Прочитано строк: {rows.Count}";
+            AddLog($"Excel загружен: {rows.Count} строк, {groups.Count} чеков.");
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException or FormatException)
         {
+            AddLog($"Ошибка чтения Excel: {exception.Message}");
             ShowError($"Ошибка чтения Excel: {exception.Message}");
         }
     }
@@ -168,33 +172,79 @@ public partial class MainWindow : Window
 
         try
         {
-            var rows = _excelReader.Read(_excelPath);
-            var groups = ExcelReceiptReader.GroupByFiscalDocument(rows);
             _runCancellation = new CancellationTokenSource();
+            _currentRunLog = _logService.StartRun();
+            AddLog($"Начало запуска обработки. Excel: {_excelPath}");
+            var rows = _excelReader.Read(_excelPath, AddLog);
+            var allGroups = ExcelReceiptReader.GroupByFiscalDocument(rows);
+            var (startIndex, endIndex) = ReadReceiptRange(allGroups.Count);
+            var groups = allGroups.Skip(startIndex).Take(endIndex - startIndex + 1).ToList();
             RunButton.IsEnabled = false;
             CancelButton.IsEnabled = true;
-            var progress = new Progress<string>(message => StatusText.Text = message);
-            await _runner.RunAsync(_profile, window.Handle, groups, progress, _runCancellation.Token);
+            AddLog($"Запуск обработки чеков {startIndex + 1}-{endIndex + 1} из {allGroups.Count}. Файл лога: {_currentRunLog.FilePath}");
+            var progress = new Progress<string>(AddLog);
+            await _runner.RunAsync(_profile, window.Handle, groups, progress, _runCancellation.Token, startIndex);
+            AddLog("Обработка завершена.");
             StatusText.Text = "Обработка завершена";
         }
         catch (OperationCanceledException)
         {
+            AddLog("Обработка остановлена пользователем.");
             StatusText.Text = "Обработка остановлена";
         }
         catch (Exception exception) when (exception is InvalidOperationException or FormatException or ElementNotAvailableException)
         {
+            AddLog($"Ошибка UI Automation: {exception.Message}");
             ShowError($"Ошибка UI Automation: {exception.Message}");
         }
         finally
         {
             _runCancellation?.Dispose();
             _runCancellation = null;
+            _currentRunLog?.Dispose();
+            _currentRunLog = null;
             RunButton.IsEnabled = true;
             CancelButton.IsEnabled = false;
         }
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => _runCancellation?.Cancel();
+
+    private void ClearLog_Click(object sender, RoutedEventArgs e) => LogTextBox.Clear();
+
+    private (int StartIndex, int EndIndex) ReadReceiptRange(int totalCount)
+    {
+        if (!int.TryParse(StartReceiptTextBox.Text, out var start) || start < 1)
+        {
+            throw new InvalidOperationException("Номер первого чека должен быть положительным числом.");
+        }
+
+        var end = string.IsNullOrWhiteSpace(EndReceiptTextBox.Text)
+            ? totalCount
+            : int.TryParse(EndReceiptTextBox.Text, out var parsedEnd) ? parsedEnd : 0;
+        if (end < start || end > totalCount)
+        {
+            throw new InvalidOperationException($"Диапазон чеков должен быть от 1 до {totalCount}, причем начальный номер не больше конечного.");
+        }
+
+        return (start - 1, end - 1);
+    }
+
+    private void AddLog(string message)
+    {
+        var line = $"{DateTime.Now:HH:mm:ss.fff} {message}";
+        LogTextBox.AppendText(line + Environment.NewLine);
+        LogTextBox.ScrollToEnd();
+        StatusText.Text = message;
+        if (_currentRunLog is null)
+        {
+            _logService.Write(message);
+        }
+        else
+        {
+            _currentRunLog.Write(message);
+        }
+    }
 
     protected override void OnClosed(EventArgs e)
     {

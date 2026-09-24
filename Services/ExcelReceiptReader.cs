@@ -8,7 +8,7 @@ public sealed class ExcelReceiptReader
 {
     private static readonly CultureInfo RussianCulture = CultureInfo.GetCultureInfo("ru-RU");
 
-    public IReadOnlyList<ReceiptRow> Read(string filePath)
+    public IReadOnlyList<ReceiptRow> Read(string filePath, Action<string>? log = null)
     {
         using var workbook = new XLWorkbook(filePath);
         var worksheet = workbook.Worksheets.FirstOrDefault()
@@ -45,15 +45,24 @@ public sealed class ExcelReceiptReader
                 continue;
             }
 
+            var formationCell = row.Cell(indexes["Время формирования чека"]);
+            var productName = row.Cell(indexes["Наименование товара"]).GetString().Trim();
+            var fiscalDocumentNumber = row.Cell(indexes["Номер ФД"]).GetString().Trim();
+            if (IsEmptyOrMarker(formationCell.GetString()))
+            {
+                log?.Invoke($"Пропущена строка Excel {row.RowNumber()}: отсутствует дата. Товар: «{productName}», ФД: «{fiscalDocumentNumber}».");
+                continue;
+            }
+
             result.Add(new ReceiptRow
             {
-                FormationTime = ReadDate(row.Cell(indexes["Время формирования чека"])),
-                ProductName = row.Cell(indexes["Наименование товара"]).GetString().Trim(),
+                FormationTime = ReadDate(formationCell, row.RowNumber()),
+                ProductName = productName,
                 Quantity = ReadDecimal(row.Cell(indexes["Количество"])),
                 ItemPrice = ReadDecimal(row.Cell(indexes["Цена"])),
                 ItemAmount = ReadDecimal(row.Cell(indexes["Сумма товара"])),
                 PaymentMethod = row.Cell(indexes["Способ оплаты"]).GetString().Trim(),
-                FiscalDocumentNumber = row.Cell(indexes["Номер ФД"]).GetString().Trim(),
+                FiscalDocumentNumber = fiscalDocumentNumber,
                 FiscalSign = row.Cell(indexes["ФПД"]).GetString().Trim(),
                 VatAmount = ReadDecimal(row.Cell(indexes["НДС 22%"])),
             });
@@ -92,7 +101,7 @@ public sealed class ExcelReceiptReader
         throw new InvalidOperationException($"В Excel-файле отсутствует столбец «{header}».");
     }
 
-    private static DateTime ReadDate(IXLCell cell)
+    private static DateTime ReadDate(IXLCell cell, int rowNumber)
     {
         if (cell.TryGetValue<DateTime>(out var date))
         {
@@ -104,7 +113,13 @@ public sealed class ExcelReceiptReader
             return date;
         }
 
-        throw new FormatException($"Не удалось прочитать дату: «{cell.GetString()}».");
+        throw new FormatException($"Не удалось прочитать дату в строке Excel {rowNumber}: «{cell.GetString()}».");
+    }
+
+    private static bool IsEmptyOrMarker(string value)
+    {
+        var normalized = value.Trim();
+        return string.IsNullOrWhiteSpace(normalized) || normalized == "<>";
     }
 
     private static decimal ReadDecimal(IXLCell cell)
