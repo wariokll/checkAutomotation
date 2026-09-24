@@ -260,9 +260,10 @@ public partial class MainWindow : Window
         builder.AppendLine($"Строк: {rows.Count}");
         builder.AppendLine($"Чеков по ФД: {groups.Count}");
         builder.AppendLine();
-        foreach (var group in groups)
+        for (var index = 0; index < groups.Count; index++)
         {
-            builder.AppendLine($"ФД {group.FiscalDocumentNumber}: позиций {group.Rows.Count}, сумма {group.TotalPrice:0.##}, НДС {group.TotalVat:0.##}, оплата: {group.PaymentMethod}");
+            var group = groups[index];
+            builder.AppendLine($"Чек {index + 1} | ФД {group.FiscalDocumentNumber} | {group.FormationTime:dd.MM.yyyy HH:mm} | позиций: {group.Rows.Count}, сумма: {group.TotalPrice:0.##}, НДС: {group.TotalVat:0.##}, оплата: {group.PaymentMethod}");
         }
 
         return builder.ToString();

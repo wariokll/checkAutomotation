@@ -13,3 +13,6 @@ obj/
 # IDE files
 .vscode/
 .idea/
+
+# Release and installer output
+artifacts/

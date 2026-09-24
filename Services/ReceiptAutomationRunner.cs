@@ -59,14 +59,22 @@ public sealed class ReceiptAutomationRunner
             Invoke(root, profile, "SendTag", progress, "Нажатие: отправить тег");
             await DelayAfterUiActionAsync(cancellationToken);
             Invoke(root, profile, "FiscalOperations", progress, "Нажатие: операции ФН");
+            SetValue(root, profile, "Cash", "0", progress, "Обнуление поля наличных");
+            SetValue(root, profile, "Cashless", "0", progress, "Обнуление поля безналичных");
 
-            if (group.PaymentMethod.Contains("налич", StringComparison.OrdinalIgnoreCase))
+            if (IsCashPayment(group.PaymentMethod))
             {
+                progress?.Report($"Способ оплаты «{group.PaymentMethod}»: поле наличных");
                 SetValue(root, profile, "Cash", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод суммы наличных");
+            }
+            else if (IsCashlessPayment(group.PaymentMethod))
+            {
+                progress?.Report($"Способ оплаты «{group.PaymentMethod}»: поле безналичных");
+                SetValue(root, profile, "Cashless", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод суммы безналичных");
             }
             else
             {
-                SetValue(root, profile, "Cashless", group.TotalPrice.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод суммы безналичных");
+                throw new InvalidOperationException($"Неизвестный способ оплаты в Excel: «{group.PaymentMethod}».");
             }
 
             SetValue(root, profile, "Vat22", group.TotalVat.ToString("0.##", CultureInfo.InvariantCulture), progress, "Ввод НДС 22%");
@@ -135,5 +143,17 @@ public sealed class ReceiptAutomationRunner
             ?? throw new InvalidOperationException($"В настройках не сохранен элемент «{key}».");
         return _uiAutomation.Resolve(root, definition)
             ?? throw new InvalidOperationException($"Не найден элемент «{definition.DisplayName}».");
+    }
+
+    private static bool IsCashPayment(string paymentMethod)
+    {
+        return !IsCashlessPayment(paymentMethod) &&
+               paymentMethod.Contains("налич", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCashlessPayment(string paymentMethod)
+    {
+        return paymentMethod.Contains("безнал", StringComparison.OrdinalIgnoreCase) ||
+               paymentMethod.Contains("карта", StringComparison.OrdinalIgnoreCase);
     }
 }
