@@ -1,0 +1,231 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Windows;
+using System.Windows.Automation;
+using Microsoft.Win32;
+using UIAutomationInspectorWpf.Models;
+using UIAutomationInspectorWpf.Services;
+
+namespace UIAutomationInspectorWpf;
+
+public partial class MainWindow : Window
+{
+    private readonly ProfileStore _profileStore = new();
+    private readonly ExcelReceiptReader _excelReader = new();
+    private readonly UiAutomationService _uiAutomation = new();
+    private readonly ElementPickerService _picker;
+    private readonly ReceiptAutomationRunner _runner;
+    private readonly ObservableCollection<WindowInfo> _windows = [];
+    private AutomationProfile _profile;
+    private string? _excelPath;
+    private string? _pickingKey;
+    private CancellationTokenSource? _runCancellation;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        _profile = _profileStore.Load();
+        _picker = new ElementPickerService();
+        _picker.ElementPicked += ElementPicker_ElementPicked;
+        _runner = new ReceiptAutomationRunner(_uiAutomation);
+        TargetWindowComboBox.ItemsSource = _windows;
+        ElementSettingsList.ItemsSource = _profile.Elements;
+        RefreshWindows();
+    }
+
+    private void RefreshWindows_Click(object sender, RoutedEventArgs e) => RefreshWindows();
+
+    private void RefreshWindows()
+    {
+        _windows.Clear();
+        foreach (var process in Process.GetProcesses()
+                     .Where(process => process.MainWindowHandle != IntPtr.Zero)
+                     .Select(process => new WindowInfo(process.ProcessName, process.Id, process.MainWindowHandle, process.MainWindowTitle))
+                     .Where(window => !string.IsNullOrWhiteSpace(window.Title))
+                     .OrderBy(window => window.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            _windows.Add(process);
+        }
+
+        StatusText.Text = $"Найдено окон: {_windows.Count}";
+    }
+
+    private void PickElement_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string key })
+        {
+            return;
+        }
+
+        _pickingKey = key;
+        StatusText.Text = "Кликните нужный элемент в целевом окне...";
+        _picker.Start();
+    }
+
+    private void ElementPicker_ElementPicked(object? sender, AutomationElement element)
+    {
+        if (_pickingKey is null)
+        {
+            return;
+        }
+
+        var definition = _profile.Elements.First(elementDefinition => elementDefinition.Key == _pickingKey);
+        var updated = _uiAutomation.Describe(element, definition.Key, definition.DisplayName);
+        definition.AutomationId = updated.AutomationId;
+        definition.Name = updated.Name;
+        definition.ClassName = updated.ClassName;
+        definition.ControlType = updated.ControlType;
+        definition.ProcessId = updated.ProcessId;
+        definition.NativeWindowHandle = updated.NativeWindowHandle;
+        if (definition.ProcessId != 0)
+        {
+            var targetWindow = _windows.FirstOrDefault(window => window.ProcessId == definition.ProcessId);
+            if (targetWindow is not null)
+            {
+                TargetWindowComboBox.SelectedItem = targetWindow;
+                _profile.TargetWindowTitle = targetWindow.Title;
+                _profile.TargetProcessId = targetWindow.ProcessId;
+            }
+        }
+        ElementSettingsList.Items.Refresh();
+        try
+        {
+            _profileStore.Save(_profile);
+            StatusText.Text = $"Сохранен элемент: {definition.DisplayName}";
+        }
+        catch (IOException exception)
+        {
+            StatusText.Text = $"Элемент выбран, но профиль не сохранен: {exception.Message}";
+        }
+        _pickingKey = null;
+    }
+
+    private void SaveProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (TargetWindowComboBox.SelectedItem is WindowInfo window)
+        {
+            _profile.TargetWindowTitle = window.Title;
+            _profile.TargetProcessId = window.ProcessId;
+        }
+
+        try
+        {
+            _profileStore.Save(_profile);
+            StatusText.Text = "Настройки сохранены";
+        }
+        catch (IOException exception)
+        {
+            ShowError($"Не удалось сохранить настройки: {exception.Message}");
+        }
+    }
+
+    private void ResetProfile_Click(object sender, RoutedEventArgs e)
+    {
+        _profile = _profileStore.Load();
+        ElementSettingsList.ItemsSource = _profile.Elements;
+        StatusText.Text = "Профиль перезагружен";
+    }
+
+    private void SelectExcel_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Excel (*.xlsx)|*.xlsx",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var rows = _excelReader.Read(dialog.FileName);
+            var groups = ExcelReceiptReader.GroupByFiscalDocument(rows);
+            _excelPath = dialog.FileName;
+            ExcelPathText.Text = dialog.FileName;
+            PreviewTextBox.Text = BuildPreview(rows, groups);
+            RunButton.IsEnabled = rows.Count > 0;
+            StatusText.Text = $"Прочитано строк: {rows.Count}";
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or FormatException)
+        {
+            ShowError($"Ошибка чтения Excel: {exception.Message}");
+        }
+    }
+
+    private async void RunButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_excelPath is null || TargetWindowComboBox.SelectedItem is not WindowInfo window)
+        {
+            ShowError("Выберите Excel-файл и окно назначения.");
+            return;
+        }
+
+        try
+        {
+            var rows = _excelReader.Read(_excelPath);
+            var groups = ExcelReceiptReader.GroupByFiscalDocument(rows);
+            _runCancellation = new CancellationTokenSource();
+            RunButton.IsEnabled = false;
+            CancelButton.IsEnabled = true;
+            var progress = new Progress<string>(message => StatusText.Text = message);
+            await _runner.RunAsync(_profile, window.Handle, groups, progress, _runCancellation.Token);
+            StatusText.Text = "Обработка завершена";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = "Обработка остановлена";
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or FormatException or ElementNotAvailableException)
+        {
+            ShowError($"Ошибка UI Automation: {exception.Message}");
+        }
+        finally
+        {
+            _runCancellation?.Dispose();
+            _runCancellation = null;
+            RunButton.IsEnabled = true;
+            CancelButton.IsEnabled = false;
+        }
+    }
+
+    private void CancelButton_Click(object sender, RoutedEventArgs e) => _runCancellation?.Cancel();
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _picker.Dispose();
+        _runCancellation?.Cancel();
+        _runCancellation?.Dispose();
+        base.OnClosed(e);
+    }
+
+    private static string BuildPreview(IReadOnlyList<ReceiptRow> rows, IReadOnlyList<ReceiptGroup> groups)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine($"Строк: {rows.Count}");
+        builder.AppendLine($"Чеков по ФД: {groups.Count}");
+        builder.AppendLine();
+        foreach (var group in groups)
+        {
+            builder.AppendLine($"ФД {group.FiscalDocumentNumber}: позиций {group.Rows.Count}, сумма {group.TotalPrice:0.##}, НДС {group.TotalVat:0.##}, оплата: {group.PaymentMethod}");
+        }
+
+        return builder.ToString();
+    }
+
+    private void ShowError(string message)
+    {
+        StatusText.Text = message;
+        MessageBox.Show(this, message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    public sealed record WindowInfo(string ProcessName, int ProcessId, IntPtr Handle, string Title)
+    {
+        public override string ToString() => $"{ProcessName} ({Title})";
+    }
+}

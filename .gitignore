@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local application data
+*.json
+!appsettings.json
+
+# IDE files
+.vscode/
+.idea/
