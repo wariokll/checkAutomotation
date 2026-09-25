@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Windows;
 using System.Windows.Automation;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private readonly UiAutomationService _uiAutomation = new();
     private readonly ElementPickerService _picker;
     private readonly ReceiptAutomationRunner _runner;
+    private readonly OfdApiExportService _ofdApiExportService = new();
     private readonly AutomationLogService _logService = new();
     private readonly ObservableCollection<WindowInfo> _windows = [];
     private AutomationProfile _profile;
@@ -24,6 +26,7 @@ public partial class MainWindow : Window
     private string? _excelPath;
     private string? _pickingKey;
     private CancellationTokenSource? _runCancellation;
+    private CancellationTokenSource? _ofdCancellation;
 
     public MainWindow()
     {
@@ -34,6 +37,8 @@ public partial class MainWindow : Window
         _runner = new ReceiptAutomationRunner(_uiAutomation);
         TargetWindowComboBox.ItemsSource = _windows;
         ElementSettingsList.ItemsSource = _profile.Elements;
+        OfdStartDatePicker.SelectedDate = DateTime.Today;
+        OfdEndDatePicker.SelectedDate = DateTime.Today;
         RefreshWindows();
     }
 
@@ -210,6 +215,73 @@ public partial class MainWindow : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => _runCancellation?.Cancel();
 
+    private async void ExportOfd_Click(object sender, RoutedEventArgs e)
+    {
+        if (OfdStartDatePicker.SelectedDate is not DateTime startDate ||
+            OfdEndDatePicker.SelectedDate is not DateTime endDate)
+        {
+            ShowError("Укажите начальную и конечную даты для выгрузки ОФД.");
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Filter = "Excel (*.xlsx)|*.xlsx",
+            FileName = $"ofd-{startDate:yyyy-MM-dd}-{endDate:yyyy-MM-dd}.xlsx",
+            OverwritePrompt = true
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        _ofdCancellation = new CancellationTokenSource();
+        CancelOfdButton.IsEnabled = true;
+        OfdOutputPathText.Text = dialog.FileName;
+        OfdLogTextBox.Clear();
+        AppendOfdLog($"Начало выгрузки ОФД: {startDate:dd.MM.yyyy} - {endDate:dd.MM.yyyy}.");
+
+        try
+        {
+            var progress = new Progress<string>(AppendOfdLog);
+            var rows = await _ofdApiExportService.ExportAsync(
+                OfdTokenPasswordBox.Password,
+                FiscalDriveNumberTextBox.Text,
+                startDate,
+                endDate,
+                dialog.FileName,
+                progress,
+                _ofdCancellation.Token);
+            AppendOfdLog($"Выгрузка завершена. Получено строк: {rows}.");
+        }
+        catch (OperationCanceledException)
+        {
+            AppendOfdLog("Выгрузка ОФД остановлена пользователем.");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or IOException)
+        {
+            AppendOfdLog($"Ошибка выгрузки ОФД: {exception.Message}");
+            ShowError($"Ошибка выгрузки ОФД: {exception.Message}");
+        }
+        finally
+        {
+            _ofdCancellation.Dispose();
+            _ofdCancellation = null;
+            CancelOfdButton.IsEnabled = false;
+        }
+    }
+
+    private void CancelOfd_Click(object sender, RoutedEventArgs e) => _ofdCancellation?.Cancel();
+
+    private void AppendOfdLog(string message)
+    {
+        var line = $"{DateTime.Now:HH:mm:ss.fff} {message}";
+        OfdLogTextBox.AppendText(line + Environment.NewLine);
+        OfdLogTextBox.ScrollToEnd();
+        StatusText.Text = message;
+        _logService.Write(message);
+    }
+
     private void ClearLog_Click(object sender, RoutedEventArgs e) => LogTextBox.Clear();
 
     private (int StartIndex, int EndIndex) ReadReceiptRange(int totalCount)
@@ -251,6 +323,8 @@ public partial class MainWindow : Window
         _picker.Dispose();
         _runCancellation?.Cancel();
         _runCancellation?.Dispose();
+        _ofdCancellation?.Cancel();
+        _ofdCancellation?.Dispose();
         base.OnClosed(e);
     }
 
